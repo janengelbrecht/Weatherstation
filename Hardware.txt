@@ -1,0 +1,238 @@
+Hardware Beskrivelse — Vejrstation (ESP8266 / NodeMCU)
+Fil: Weatherstation_Hardware.txt
+Formål: Komplet dokumentation af hardware, pin-mapping og fysiske forbindelser for vejrstationen, baseret på Weatherstation.ino.
+
+1. OVERBLIK OVER HARDWARE
+Vejrstationen består af følgende fysiske komponenter:
+
+#	Komponent			Type							Formål
+1	NodeMCU (ESP8266)	Microcontroller					Hjernen: kører firmware, WiFi, I2C, display, seriel protokol
+2	OLED Display		SSD1306, 128x64 px, I2C			Viser vejrdata, tid, dato og konfigurationsbeskeder
+3	BMP085				Tryk- og temperatursensor, I2C	Måler lokal temperatur og atmosfærisk tryk
+4	BH1750				Digital lyssensor (Lux), I2C	Måler omgivende lysintensitet
+5	Trykknap			Momentan, normalt åben			Start PC-konfiguration / afbryd program
+6	USB-kabel			Seriel forbindelse (9600 8E1)	Kommunikation med Free Pascal PC-program
+
+2. SYSTEMARKITEKTUR — FORBINDELSESOVERSIGT
+
+                    ┌───────────────────────────────────────────────────────────────────────┐
+                    │      NodeMCU ESP8266        			 			  		      	    │
+                    │                             			 						  	    │
+                    │  GPIO12 (D6) ───────────────────┼──── SDA ────┬─── OLED SDA	  	    │
+                    │  GPIO14 (D5) ───────────────────┼──── SCL ────┼─── BMP085 SCL	  	    │
+                    │  GPIO13 (D7) ──── [KNAP] ───────┼──── GND     ├─── BH1750 SCL		    │
+                    │  3.3V ──────────────────────────┼──── VCC ────┴─── (alle 3 sensorer) 	│
+                    │  GND ───────────────────────────┼──── GND ────────── (alle 3 sensorer)│
+                    │  USB (D+/D-) ───────────────────┼──── PC (Free Pascal) 				│
+                    └───────────────────────────────────────────────────────────────────────┘
+Vigtigt: Alle tre I2C-enheder (OLED, BMP085, BH1750) deler samme SDA/SCL-bus. De er parallelkolet på GPIO12 (SDA) og GPIO14 (SCL).
+
+3. STRØMFORSYNING
+Net			Spænding	Kilde										Forbrugere
+3.3V		3.3V DC		NodeMCU's indbyggede regulator (fra USB 5V)	OLED VCC, BMP085 VCC, BH1750 VCC
+GND			0V			NodeMCU GND									OLED GND, BMP085 GND, BH1750 GND, Trykknap ben 2
+5V (USB)	5V DC		USB-port									NodeMCU's egen regulator
+Bemærk: ESP8266 arbejder med 3.3V logik. Alle sensorer SKAL forbindes til 3.3V — ikke 5V — ellers kan de beskadiges.
+
+4. I2C-BUSSEN (DELT DATABUS)
+I2C er en 2-tråds seriel bus. Alle enheder er parallelkoblet:
+
+SDA (Serial Data) → GPIO12
+
+SCL (Serial Clock) → GPIO14
+
+4.1 I2C-adresser på bussen
+Enhed			I2C-adresse (7-bit)	I2C-adresse (8-bit, brugt af U8g2)	Bemærkning
+OLED SSD1306	0x3C				0x78								I2C_DISPLAY_ADDRESS * 2 i koden
+BMP085			0x77				0xEE								Fast adresse
+BH1750			0x23				0x46								Standard (kan ændres til 0x5C ved at trække ADDR HIGH)
+Ingen adressekonflikt: 0x3C, 0x77 og 0x23 er alle unikke → alle tre kan dele samme bus.
+
+4.2 I2C timing — kode-rækkefølge (KRITISK)
+Koden har en kritisk rettelse i opsaetHardware():
+
+u8g2.begin();                              // U8g2 kalder internt Wire.begin() UDEN parametre
+Wire.begin(OLED_SDA_Pin, OLED_SCL_Pin);    // Vi tvinger bussen tilbage til GPIO12/14
+Hvorfor: u8g2.begin() nulstiller I2C-bussen til ESP8266's standard-pins (GPIO4/GPIO5). 
+Ved at kalde Wire.begin(12, 14) efter u8g2.begin(), sikres det at alle tre sensorer kommunikerer på de korrekte pins.
+
+5. PIN-BESKRIVELSE PR. MODUL
+5.1 NodeMCU (ESP8266) — anvendte pins
+NodeMCU-label	GPIO	Funktion i koden	Forbundet til											Retning
+D5				GPIO14	OLED_SCL_Pin — 		I2C Clock		OLED SCL, BMP085 SCL, BH1750 SCL		Output (I2C master)
+D6				GPIO12	OLED_SDA_Pin — 		I2C Data		OLED SDA, BMP085 SDA, BH1750 SDA		Bidirektionel (I2C master)
+D7				GPIO13	KNAP_PIN — 			Trykknap input	Trykknap ben 1 (ben 2 → GND)			Input, INPUT_PULLUP
+3V3				3.3V	Strøm				OLED VCC, 		BMP085 VCC, BH1750 VCC					Power
+GND				0V		Stel				OLED GND, 		BMP085 GND, BH1750 GND, Trykknap ben 2	Power
+USB	—	Seriel protokol (9600 8E1)	PC (Free Pascal) via USB-kabel	TX/RX
+Ikke anvendte pins: GPIO0, GPIO1 (TX), GPIO2, GPIO3 (RX), GPIO4, GPIO5, GPIO9-11, GPIO15, GPIO16, A0. 
+GPIO1/GPIO3 er reserveret til hardware-UART (debug), men bruges ikke aktivt i koden.
+
+Bemærk om GPIO13 (D7): Koden bruger INPUT_PULLUP — den interne pull-up modstand (typisk 30-100 kΩ) trækker pinnen til 3.3V. 
+Når knappen trykkes, kortsluttes pinnen til GND, og digitalRead() returnerer LOW.
+
+Bemærk om GPIO12 (D6): ESP8266 har en intern pull-up på GPIO12, men det er ikke garanteret i alle boot-tilstande. 
+Ekstern 4.7-10 kΩ pull-up anbefales (se afsnit 8).
+
+5.2 OLED Display — SSD1306 128x64 (I2C)
+Model: 0.96" monokrom OLED, SSD1306-controller, I2C-grænseflade.
+U8g2-konstruktør: U8G2_SSD1306_128X64_NONAME_F_HW_I2C
+
+OLED-ben	Funktion			Forbundet til		NodeMCU-pin	GPIO
+VCC			3.3V strømforsyning	3.3V-rail	3V3		—
+GND			Stel				GND-rail	GND		—
+SDA			I2C Data			I2C SDA-bus	D6		GPIO12
+SCL			I2C Clock			I2C SCL-bus	D5		GPIO14
+Ikke forbundne ben: Nogle OLED-moduler har ekstra ben (RESET, CS, DC). 
+Den anvendte U8g2-konstruktør sætter reset = U8X8_PIN_NONE, hvilket betyder at RESET ikke er tilsluttet (chippen bruger sin interne power-on reset).
+
+I2C-adresse: 0x3C (fast, sættes med setI2CAddress(0x3C * 2)).
+
+5.3 BMP085 — Tryk- og Temperatursensor (I2C)
+Model: Bosch BMP085 piezoresistiv tryksensor med indbygget temperaturkompensation.
+I2C-adresse: 0x77 (fast).
+
+BMP085-ben	Funktion			Forbundet til	NodeMCU-pin			GPIO
+VCC / VDD	3.3V strømforsyning	3.3V-rail		3V3					—
+GND			Stel				GND-rail		GND					—
+SDA			I2C Data			I2C SDA-bus		D6					GPIO12
+SCL			I2C Clock			I2C SCL-bus		D5					
+GPIO14
+XCLR		Reset (aktiv lav)	Ikke forbundet — intern pull-up	—	—
+EOC			End of Conversion	Ikke forbundet — polling bruges	—	—
+Kalibrering: Ved opstart læses 11 kalibreringskoefficienter (ac1–ac6, b1, b2, mb, mc, md) fra chippens interne ROM via I2C-registre 0xAA–0xBE.
+
+Oversampling: Koden bruger BMP085_ULTRAHIGHRES (mode 3) — højeste præcision, men langsomst (26 ms per måling).
+
+5.4 BH1750 — Digital Lysintensitetssensor (I2C)
+Model: ROHM BH1750FVI, digital 16-bit lux-sensor.
+I2C-adresse: 0x23 (standard, ADDR-benet LOW eller flydende).
+
+BH1750-ben	Funktion			Forbundet til						NodeMCU-pin	GPIO
+VCC			3.3V strømforsyning	3.3V-rail							3V3			—
+GND			Stel				GND-rail							GND			—
+SDA			I2C Data			I2C SDA-bus							D6			GPIO12
+SCL			I2C Clock			I2C SCL-bus							D5			GPIO14
+ADDR		Adresse-vælger		Ikke forbundet (flydende = 0x23)	—			—
+
+Konfiguration: Koden sætter sensoren i CONTINUOUS_HIGH_RES_MODE (0x10) med MTreg = 69 (default). Dette giver 1 lux opløsning og automatisk opdatering af output-registeret.
+
+Konverteringsfaktor: Rå I2C-værdi divideres med 1.2 for at få lux (jf. datablad).
+
+5.5 Trykknap — Hardware-konfigurationsknap
+Type: Momentan trykknap (normalt åben).
+
+Knap-ben	Funktion	Forbundet til		NodeMCU-pin	GPIO
+Ben 1		Signal		GPIO13 (D7)	D7		GPIO13
+Ben 2		Stel		GND-rail	GND		—
+
+Elektrisk opførsel:
+
+Hvile: GPIO13 trækkes til HIGH (3.3V) af intern pull-up (INPUT_PULLUP)
+
+Trykket: GPIO13 kortsluttes til LOW (0V) via GND
+
+Koden læser digitalRead(KNAP_PIN) == LOW for at detektere tryk
+
+Debounce: Koden bruger software-debounce i ventPaaKnapTryk() med delay(50) i løkken og delay(200) efter slip.
+
+Anvendelse:
+
+Ved opstart: Hvis knappen holdes nede, startes PC-konfiguration.
+
+Under drift: Hvis knappen trykkes, afbrydes programmet og PC-konfiguration startes.
+
+5.6 USB / Seriel protokol — PC-forbindelse
+Forbindelse: NodeMCU's USB-port → PC via USB-kabel (integreret USB-UART chip, typisk CP2102 eller CH340).
+
+Signal	NodeMCU	PC	Protokol
+TX	GPIO1 (intern)	RX	9600 baud, 8E1
+RX	GPIO3 (intern)	TX	9600 baud, 8E1
+GND	GND	GND	Stel
+VBUS	5V	5V	Strøm (valgfri)
+Seriel konfiguration: 	Serial.begin(9600, SERIAL_8E1) — 9600 baud, 8 databit, Even parity, 1 stopbit.
+
+Bemærk: GPIO1/GPIO3 bruges kun til den serielle PC-protokol. De er ikke forbundet til eksterne komponenter på printet.
+
+Protokol (174 bytes fast længde):
+
+Offset	Længde	Felt
+000–049	50		SSID
+050–099	50		Password
+100–119	20		Land
+120–159	40		By
+160–166	7		Længdegrad (Longitude)
+167–173	7		Breddegrad (Latitude)
+Handshake: 		ESP sender "klar" → PC svarer med 174 bytes → ESP gemmer i EEPROM → genstarter.
+
+6. KOMPLET FORBINDELSESMATRICE
+Nedenstående tabel viser enhver fysisk forbindelse i systemet:
+
+Fra (komponent, ben)	Til (komponent, ben)	Signal			NodeMCU GPIO
+OLED VCC				3.3V-rail				3.3V			—
+OLED GND				GND-rail				GND				—
+OLED SDA				I2C SDA-bus				SDA				GPIO12 (D6)
+OLED SCL				I2C SCL-bus				SCL				GPIO14 (D5)
+BMP085 VCC				3.3V-rail				3.3V			—
+BMP085 GND				GND-rail				GND				—
+BMP085 SDA				I2C SDA-bus				SDA				GPIO12 (D6)
+BMP085 SCL				I2C SCL-bus				SCL				GPIO14 (D5)
+BH1750 VCC				3.3V-rail				3.3V			—
+BH1750 GND				GND-rail				GND				—
+BH1750 SDA				I2C SDA-bus				SDA				GPIO12 (D6)
+BH1750 SCL				I2C SCL-bus				SCL				GPIO14 (D5)
+Trykknap ben 1			GPIO13					Signal			GPIO13 (D7)
+Trykknap ben 2			GND-rail				GND				—
+USB D+					PC USB D+				Data			—
+USB D-					PC USB D-				Data			—
+USB VBUS				PC USB 5V				Strøm			—
+USB GND					PC USB GND				Stel			—
+
+7. STRØM- OG SIGNALSPÆNDINGER
+Signal				Logisk niveau	Spænding
+I2C HIGH			Logisk 1		3.3V (via pull-up)
+I2C LOW				Logisk 0		0V (drevet af master/slave)
+Knap HIGH (hvile)	Logisk 1		3.3V (intern pull-up)
+Knap LOW (trykket)	Logisk 0		0V (GND)
+UART TX/RX			3.3V TTL		0V / 3.3V
+USB					5V differentiel	0V / 3.3V (intern)
+8. ANBEFALINGER (HARDWARE-INTEGRITET)
+Selvom koden fungerer uden disse, anbefales følgende for robusthed:
+
+Anbefaling									Formål
+4.7–10 kΩ pull-up på SDA (GPIO12)			ESP8266's interne pull-up er svag; ekstern sikrer stabil I2C
+4.7–10 kΩ pull-up på SCL (GPIO14)			Samme som ovenstående
+100 nF keramisk kondensator ved hver sensors VCC	Afkobling mod støj
+10 µF elektrolyt ved NodeMCU's 3.3V			Buffer ved strømspidser
+100 nF keramisk ved trykknap				Hardware-debounce (supplerer software)
+Seriel 100 Ω modstand på SDA/SCL			Begrænser strøm ved fejl
+
+9. FEJLFINDINGS-REFERENCE
+Symptom	Mulig årsag		Løsning
+OLED viser intet		I2C-bus ikke initialiseret korrekt		Tjek at Wire.begin(12, 14) kaldes efter u8g2.begin()
+"Kunne ikke finde BMP085"	Sensor ikke tilsluttet / forkert adresse	Tjek SDA/SCL og 3.3V; mål 0x77 med I2C-scanner
+"Kunne ikke finde BH1750"	Sensor ikke tilsluttet / ADDR flydende		Tjek SDA/SCL; ADDR skal være flydende for 0x23
+Knap reagerer ikke		Pull-up mangler / dårlig forbindelse		Mål 3.3V på GPIO13 i hvile; tjek GND på ben 2
+PC-konfiguration timeout	Forkert seriel hastighed/parity			Sikr 9600 8E1 i Pascal-programmet
+ESP genstarter i loop		BMP085 ikke fundet → division by zero (rettet)	Verificer bmpOK-flag; tjek sensor
+Display fryser	I2C-bus låst	Tjek pull-ups; genstart ESP
+
+10. HURTIG-REFERENCE (CHEAT SHEET)
+text
+┌──────────────────────────────────────────────────────────┐
+│  NODEMCU PIN-MAP                                         │
+├──────────────────────────────────────────────────────────┤
+│  D5  (GPIO14) ── I2C SCL ── OLED + BMP085 + BH1750       │
+│  D6  (GPIO12) ── I2C SDA ── OLED + BMP085 + BH1750       │
+│  D7  (GPIO13) ── Knap ───── Trykknap ben 1               │
+│  3V3          ── Strøm ──── Alle 3 sensorer VCC          │
+│  GND          ── Stel ───── Alle 3 sensorer + knap ben 2 │
+│  USB          ── Seriel ─── PC (9600 8E1)                │
+├──────────────────────────────────────────────────────────┤
+│  I2C-ADRESSER                                            │
+│    OLED SSD1306 : 0x3C                                   │
+│    BMP085       : 0x77                                   │
+│    BH1750       : 0x23                                   │
+└──────────────────────────────────────────────────────────┘
+
+Hardwaren kan købes som et kit: https://www.aliexpress.com/item/1005010608881840.html
