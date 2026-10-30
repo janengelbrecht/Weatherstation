@@ -597,7 +597,7 @@ const unsigned long NTP_TIMEOUT_MS = 10000;      // Maksimal tid pr. NTP-forsøg
 // ArduinoJson v6 kræver 'DynamicJsonDocument doc(2048);' (fast kapacitet).
 // Koden nedenfor bruger v7-syntaks. Hvis du kompilerer med v6, skal du udskifte
 // linjen 'JsonDocument doc;' i hentVejrAPI() med 'DynamicJsonDocument doc(2048);'.
-// ArduinoJson v7 er større i kode og hukommelse end v6 [citation:1][citation:6].
+// ArduinoJson v7 er større i kode og hukommelse end v6.
 
 // Timere (millis) og intervaller til non-blocking multitasking
 unsigned long sidsteAPIOpdatering = 0;      // Tidsstempel for seneste API-kald
@@ -767,6 +767,8 @@ void haandterNTPGenforsoeg(unsigned long nuMillis) {
       // Vi kalder configTime() igen for at sætte NTP-serverne op, men undgår
       // det blokerende while-loop ved at lade time() blive tjekket asynkront nedenfor.
       configTime(TZ_INFO, "dk.pool.ntp.org", "time.google.com");
+      setenv("TZ", TZ_INFO, 1); // NYT: Sikrer at localtime() returnerer CET/CEST korrekt
+      tzset();                  // NYT: Opdaterer de globale tids-variabler på ESP8266
     }
     return;
   }
@@ -932,6 +934,8 @@ void opsaetTid() {
   
   // Konfigurerer det indbyggede system-ur med dansk tidszone og to offentlige NTP-servere
   configTime(TZ_INFO, "dk.pool.ntp.org", "time.google.com"); 
+  setenv("TZ", TZ_INFO, 1); // NYT: Opfylder krav FR-FW-07 for dansk sommertid
+  tzset();                  // NYT: Tvinger localtime() til at anvende TZ miljøvariablen
   
   time_t nu = time(nullptr);                // Forespørger den aktuelle UNIX-tid (antal sekunder siden 1970)
   int forsog = 0;                           // Variabel for at styre timeout og undgå WDT reset
@@ -1315,6 +1319,16 @@ String findVejrType(int kode) {
 void hentVejrAPI() {
   if (WiFi.status() != WL_CONNECTED) return; // Afbryd hvis WiFi-forbindelsen er nede
   
+  // NYT: Hukommelsesovervågning (R-05) for at undgå OOM og heap-fragmentering.
+  // WiFiClientSecure, setBufferSizes(4096, 1024) og http.getString() allokerer massive mængder
+  // data på heapen. Vi afbryder i god tid for at sikre stabiliteten ved langvarig drift.
+  if (ESP.getFreeHeap() < 15000) {
+    Serial.print("Kritisk advarsel: Lav heap hukommelse (");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes). Afbryder API-kald for at forhindre OOM crash.");
+    return;
+  }
+
   WiFiClientSecure client;                   // Forbindelser til api.open-meteo.com kræver SSL/HTTPS     
   client.setInsecure();                      // Tillad uvalideret SSL-forbindelse for at omgå RAM-tunge certifikatkontroller
   // Den oprindelige kode satte client.setBufferSizes(512, 512) for at spare hukommelse.
