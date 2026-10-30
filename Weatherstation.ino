@@ -54,7 +54,7 @@
    Dette er en højpræcisions piezoresistiv sensor fra Bosch. Den kommunikerer via I2C.
    Sensoren returnerer rå værdier for temperatur og tryk. For at beregne de sande værdier 
    læser software-klassen i setup() 11 specifikke kalibrerings-koefficienter (ac1-ac6, 
-   b1-b2, mb, mc, md) from sensorens indbyggede ROM. Disse bruges i komplekse matematiske 
+   b1-b2, mb, mc, md) fra sensorens indbyggede ROM. Disse bruges i komplekse matematiske 
    formler for at kompensere for temperaturafvigelser i trykmålingen.
 
    BH1750 (Lysintensitetssensor):
